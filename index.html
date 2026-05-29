@@ -8,6 +8,7 @@
   :root {
     --bg: #0f1115; --panel: #181b22; --panel2: #1f232c; --line: #2a2f3a;
     --text: #e6e9ef; --muted: #8b93a3; --accent: #5b9dff; --good: #46c08a;
+    --bad: #d05a64;
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
@@ -48,13 +49,38 @@
   .filter.on { background: rgba(91, 157, 255, .15); border-color: var(--accent); color: var(--accent); }
   .filter.zero { opacity: .45; }
   .filter .fc { font-weight: 500; opacity: .8; font-variant-numeric: tabular-nums; }
+  /* Knight Rider "KITT" scanner: the border glow swells then fades (its alpha
+     animated), and the per-button stagger set in JS sweeps it across the row. */
+  @keyframes kitt {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(91, 157, 255, 0),  0 0 0 0 rgba(91, 157, 255, 0); }
+    50%      { box-shadow: 0 0 0 2px rgba(91, 157, 255, 1), 0 0 14px 1px rgba(91, 157, 255, .65); }
+  }
+  /* Unavailable (zero-count) buckets sweep too, in a darker, dimmer hue. */
+  @keyframes kittDim {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(58, 92, 150, 0),  0 0 0 0 rgba(58, 92, 150, 0); }
+    50%      { box-shadow: 0 0 0 2px rgba(58, 92, 150, 1), 0 0 12px 1px rgba(58, 92, 150, .55); }
+  }
+  .filter.cue { animation: kitt 450ms ease-in-out both; }
+  .filter.cue.zero { animation-name: kittDim; }
 
   .meta { color: var(--muted); font-size: 13px; margin: 6px 0 14px; }
 
   .card {
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 10px; padding: 12px 14px; margin-bottom: 10px;
+    transition: border-color .2s, box-shadow .2s;
   }
+  .card.alive { border-color: var(--good); box-shadow: inset 0 0 0 1px var(--good); }
+  .card.dead  { border-color: var(--bad); }
+  .status {
+    font: 600 11px var(--mono); padding: 2px 7px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); margin-left: auto;
+    white-space: nowrap; letter-spacing: .03em;
+  }
+  .card.alive .status { color: var(--good); border-color: var(--good); }
+  .card.dead  .status { color: var(--bad); border-color: var(--bad); }
+  @keyframes pulse { 0%,100% { opacity: .45; } 50% { opacity: 1; } }
+  .card.checking .status { animation: pulse 1s ease-in-out infinite; }
   .row1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .brand { font-weight: 600; }
   .badge {
@@ -127,7 +153,7 @@ const KINDS = [
   { id: "rtmp",  label: "RTMP" },
   { id: "other", label: "Other" },
 ];
-const active = new Set(KINDS.map(k => k.id));   // all on by default
+const active = new Set();   // all off; user picks a type to reveal + scan it
 const IMG_RE = /\.(jpe?g|bmp|png|gif|mjpg|mjpeg)\b|snapshot|snap(?![a-z])|picture|\/image|getimage|jpgview|tmpfs/i;
 
 function kindOf(s) {
@@ -142,16 +168,33 @@ function buildFilters() {
   const box = $("filters");
   for (const k of KINDS) {
     const b = document.createElement("button");
-    b.className = "filter on";
+    b.className = "filter";
     b.dataset.kind = k.id;
     b.innerHTML = `${k.label}<span class="fc"></span>`;
     b.onclick = () => {
       active.has(k.id) ? active.delete(k.id) : active.add(k.id);
       b.classList.toggle("on", active.has(k.id));
       render();
+      scheduleProbe(150);   // picking a type reveals its URLs; scan them now
     };
+    // Clear the one-shot cue once it has played so it can replay next search.
+    b.addEventListener("animationend", () => {
+      b.classList.remove("cue");
+      b.style.animationDelay = "";
+    });
     box.append(b);
   }
+}
+
+// One-time attention cue after a search: ripple a blue border across the
+// filter buttons, left to right, to prompt the user to pick a type.
+function flashFilters() {
+  document.querySelectorAll("#filters .filter").forEach((b, i) => {
+    b.classList.remove("cue");
+    void b.offsetWidth;                    // restart the animation if mid-flight
+    b.style.animationDelay = (i * 50) + "ms";
+    b.classList.add("cue");
+  });
 }
 
 function form() {
@@ -238,6 +281,7 @@ function render() {
     const url = buildUrl(s);
     const card = document.createElement("div");
     card.className = "card";
+    card.dataset.url = url;
 
     const row1 = document.createElement("div");
     row1.className = "row1";
@@ -247,7 +291,9 @@ function render() {
     const badge = document.createElement("span");
     badge.className = "badge";
     badge.textContent = s.protocol;
-    row1.append(brand, badge);
+    const status = document.createElement("span");
+    status.className = "status";
+    row1.append(brand, badge, status);
 
     const urlWrap = document.createElement("div");
     urlWrap.className = "url";
@@ -280,6 +326,51 @@ function render() {
   box.replaceChildren(frag);
 }
 
+// --- Liveness probing ------------------------------------------------------
+// Scanning only runs once a type filter is chosen and its cards are visible:
+// probe every visible card concurrently via the server and light each up -
+// green when it is reachable at that URL, red border when it is not. A
+// generation token makes sure results from a stale sweep never paint freshly
+// rebuilt cards.
+let probeTimer = null;
+let probeGen = 0;
+
+function scheduleProbe(delay = 1000) {
+  clearTimeout(probeTimer);
+  probeTimer = setTimeout(probeVisible, delay);
+}
+
+function probeVisible() {
+  const gen = ++probeGen;
+  document.querySelectorAll("#results .card").forEach(card => {
+    const url = card.dataset.url || "";
+    const st = card.querySelector(".status");
+    card.classList.remove("alive", "dead", "checking");
+    if (!url || url.includes("<HOST>")) {
+      if (st) st.textContent = "";
+      return;
+    }
+    card.classList.add("checking");
+    if (st) st.textContent = "checking";
+    fetch("/api/probe?url=" + encodeURIComponent(url))
+      .then(r => r.json())
+      .then(d => {
+        if (gen !== probeGen) return;            // a newer sweep started
+        card.classList.remove("checking");
+        const alive = !!d.alive;
+        card.classList.toggle("alive", alive);
+        card.classList.toggle("dead", !alive);
+        if (st) st.textContent = alive ? ("live " + d.status) : (d.status || "no response");
+      })
+      .catch(() => {
+        if (gen !== probeGen) return;
+        card.classList.remove("checking");
+        card.classList.add("dead");
+        if (st) st.textContent = "error";
+      });
+  });
+}
+
 let timer = null;
 async function doSearch() {
   const q = $("search").value.trim();
@@ -296,7 +387,12 @@ async function doSearch() {
     const data = await res.json();
     lastResults = data.results || [];
     render();                              // render() sets the count message
-    if (!lastResults.length) meta.textContent = "No matches.";
+    if (!lastResults.length) {
+      meta.textContent = "No matches.";
+    } else {
+      flashFilters();      // nudge the user to pick a type
+      scheduleProbe();     // re-scan if a type was already selected
+    }
   } catch (e) {
     meta.textContent = "Search failed: " + e.message;
   }
@@ -304,10 +400,10 @@ async function doSearch() {
 
 $("search").addEventListener("input", () => {
   clearTimeout(timer);
-  timer = setTimeout(doSearch, 180);
+  timer = setTimeout(doSearch, 1000);
 });
-// Re-fill URLs live as camera details change; no refetch needed.
-fields.forEach(id => $(id).addEventListener("input", render));
+// Re-fill URLs live as camera details change, then debounce a re-scan.
+fields.forEach(id => $(id).addEventListener("input", () => { render(); scheduleProbe(); }));
 buildFilters();
 $("search").focus();
 </script>

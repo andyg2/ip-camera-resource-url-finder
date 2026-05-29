@@ -15,6 +15,12 @@ Home Assistant, and the manufacturer never documented the RTSP/HTTP path.
   type, with no page reload.
 - Multi-select type filter: RTSP, HTTP, Image (snapshot), RTMP, Other, each
   showing a live count of how many matches fall in that bucket.
+- Guided liveness check: a second after you stop typing, the type filters fill
+  in with per-type counts and briefly pulse to prompt a choice. Pick a type
+  (RTSP, HTTP, ...) and only those URLs are revealed and probed against your
+  host - lit up green when reachable at that exact URL, red-bordered when not.
+  Scanning just the type you care about lets you narrow dozens of candidate
+  patterns down to the one your camera actually answers on.
 - One-click copy of the finished URL.
 - Runs entirely on `localhost`. Credentials never leave your machine; the
   database is opened read-only.
@@ -113,6 +119,36 @@ GET /api/search?q=<term>&limit=<n>
 
 `q` must be at least 2 characters. `limit` defaults to 300 (max 1000). Search
 matches brand name, brand id, and model aliases.
+
+```
+GET /api/probe?url=<full url>
+```
+
+```json
+{ "alive": true, "status": "401" }
+```
+
+Checks whether a fully built camera URL is reachable at that exact path, and
+is what the UI calls automatically for each visible result. `alive` is true for
+any real protocol response other than a 404 (so `200`, `301`/`302`, `401`,
+`403` all count - the path exists, even if it wants credentials); it is false
+for a `404`, a refused connection, or a timeout (5-second limit). Probing is
+done by protocol:
+
+- **RTSP / RTSPS / RTP** - a `DESCRIBE` request, reading the RTSP status line.
+  When credentials are present it answers the auth challenge (Digest first,
+  falling back to Basic) and re-sends, so the result reflects the exact path:
+  `200` means the path exists and the credentials work, `404` means the path is
+  wrong. A `401` that cannot be satisfied (no credentials, or they were
+  rejected) is still reported as reachable, since the RTSP server answered.
+- **HTTP / HTTPS / Image** - a short ranged `GET`, reading the status code
+  (redirects are reported as themselves, not followed; self-signed TLS certs
+  are accepted since this is a reachability check, not a security boundary).
+- **RTMP / dvrip / mms / other** - a plain TCP connect to the port (these have
+  no cheap path-level check, so a successful connect is the signal).
+
+The server only ever connects to hosts you searched and filled in, and still
+binds to `127.0.0.1` only, so probes originate from your own machine.
 
 ## Project layout
 
