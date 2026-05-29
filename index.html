@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera Stream Lookup</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b22; --panel2: #1f232c; --line: #2a2f3a;
+    --text: #e6e9ef; --muted: #8b93a3; --accent: #5b9dff; --good: #46c08a;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  header { padding: 20px 24px 8px; }
+  h1 { margin: 0; font-size: 19px; }
+  .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 24px 60px; }
+
+  .sticky {
+    position: sticky; top: 0; z-index: 5; background: var(--bg);
+    padding-top: 12px; border-bottom: 1px solid var(--line);
+  }
+  .grid {
+    display: grid; gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  input {
+    width: 100%; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--panel2); color: var(--text);
+    font-size: 14px; outline: none;
+  }
+  input:focus { border-color: var(--accent); }
+  .field.wide { grid-column: 1 / -1; }
+
+  #search { font-size: 16px; padding: 11px 12px; margin: 14px 0 10px; }
+
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 12px; }
+  .filter {
+    border: 1px solid var(--line); background: var(--panel2); color: var(--muted);
+    border-radius: 999px; padding: 6px 13px; cursor: pointer;
+    font-size: 13px; font-weight: 600;
+  }
+  .filter.on { background: rgba(91, 157, 255, .15); border-color: var(--accent); color: var(--accent); }
+  .filter.zero { opacity: .45; }
+  .filter .fc { font-weight: 500; opacity: .8; font-variant-numeric: tabular-nums; }
+
+  .meta { color: var(--muted); font-size: 13px; margin: 6px 0 14px; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px 14px; margin-bottom: 10px;
+  }
+  .row1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .brand { font-weight: 600; }
+  .badge {
+    font: 600 11px var(--mono); padding: 2px 7px; border-radius: 999px;
+    background: var(--panel2); color: var(--accent); border: 1px solid var(--line);
+    text-transform: uppercase; letter-spacing: .03em;
+  }
+  .url {
+    display: flex; gap: 8px; margin-top: 10px; align-items: stretch;
+  }
+  .url code {
+    flex: 1; font: 13px/1.4 var(--mono); background: #0b0d11;
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px;
+    color: #d7e3ff; word-break: break-all; user-select: all;
+  }
+  .copy {
+    border: 1px solid var(--line); background: var(--panel2); color: var(--text);
+    border-radius: 8px; padding: 0 14px; cursor: pointer; font-size: 13px;
+    white-space: nowrap;
+  }
+  .copy:hover { border-color: var(--accent); }
+  .copy.ok { color: var(--good); border-color: var(--good); }
+  .pattern { color: var(--muted); font: 12px var(--mono); margin-top: 8px; word-break: break-all; }
+  .models { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .empty { color: var(--muted); padding: 30px 0; text-align: center; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 2px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Camera Stream Lookup</h1>
+  <div class="sub">Search 17k+ stream URL patterns by brand or model, fill in your camera details, copy a ready-to-use URL.</div>
+</header>
+
+<div class="wrap">
+  <div class="sticky">
+    <div class="grid">
+      <div class="field"><label>Host / IP</label><input id="host" value="192.168.1.10" autocomplete="off"></div>
+      <div class="field"><label>Port (override)</label><input id="port" placeholder="auto" inputmode="numeric" autocomplete="off"></div>
+      <div class="field"><label>Username</label><input id="user" autocomplete="off"></div>
+      <div class="field"><label>Password</label><input id="pass" autocomplete="off"></div>
+      <div class="field"><label>Channel</label><input id="channel" value="1" inputmode="numeric" autocomplete="off"></div>
+      <div class="field"><label>Width</label><input id="width" placeholder="1920" inputmode="numeric" autocomplete="off"></div>
+      <div class="field"><label>Height</label><input id="height" placeholder="1080" inputmode="numeric" autocomplete="off"></div>
+      <div class="field"><label>Token (rare)</label><input id="token" autocomplete="off"></div>
+    </div>
+    <input id="search" placeholder="Search a brand or model  e.g.  hikvision, dahua, foscam, C6F0..." autocomplete="off">
+    <div class="filters" id="filters"></div>
+  </div>
+
+  <div class="meta" id="meta">Type at least 2 characters to search.</div>
+  <div id="results"></div>
+</div>
+
+<script>
+const DEFAULT_PORTS = {
+  rtsp: 554, rtsps: 322, http: 80, https: 443, rtmp: 1935,
+  rtmps: 443, mms: 1755, dvrip: 34567, rtp: 554, bubble: 0
+};
+
+const $ = id => document.getElementById(id);
+const fields = ["host", "port", "user", "pass", "channel", "width", "height", "token"];
+let lastResults = [];
+
+// Multi-select type filter. "image" = snapshot/still URLs served over http.
+const KINDS = [
+  { id: "rtsp",  label: "RTSP" },
+  { id: "http",  label: "HTTP" },
+  { id: "image", label: "Image" },
+  { id: "rtmp",  label: "RTMP" },
+  { id: "other", label: "Other" },
+];
+const active = new Set(KINDS.map(k => k.id));   // all on by default
+const IMG_RE = /\.(jpe?g|bmp|png|gif|mjpg|mjpeg)\b|snapshot|snap(?![a-z])|picture|\/image|getimage|jpgview|tmpfs/i;
+
+function kindOf(s) {
+  const p = s.protocol;
+  if (p === "rtsp" || p === "rtsps" || p === "rtp") return "rtsp";
+  if (p === "rtmp" || p === "rtmps") return "rtmp";
+  if (p === "http" || p === "https") return IMG_RE.test(s.url) ? "image" : "http";
+  return "other";  // dvrip, mms, bubble, etc.
+}
+
+function buildFilters() {
+  const box = $("filters");
+  for (const k of KINDS) {
+    const b = document.createElement("button");
+    b.className = "filter on";
+    b.dataset.kind = k.id;
+    b.innerHTML = `${k.label}<span class="fc"></span>`;
+    b.onclick = () => {
+      active.has(k.id) ? active.delete(k.id) : active.add(k.id);
+      b.classList.toggle("on", active.has(k.id));
+      render();
+    };
+    box.append(b);
+  }
+}
+
+function form() {
+  return {
+    host: $("host").value.trim(),
+    port: $("port").value.trim(),
+    user: $("user").value,
+    pass: $("pass").value,
+    channel: $("channel").value.trim(),
+    width: $("width").value.trim() || "1920",
+    height: $("height").value.trim() || "1080",
+    token: $("token").value.trim(),
+  };
+}
+
+function buildUrl(stream) {
+  const f = form();
+  const enc = encodeURIComponent;
+  const raw = stream.url;
+
+  // Substitute the in-URL placeholder tokens.
+  let path = raw
+    .replace(/\[USERNAME\]/g, enc(f.user))
+    .replace(/\[PASS?WORD\]/g, enc(f.pass))            // PASSWORD and the PASWORD typo
+    .replace(/\[WIDTH\]/g, f.width)
+    .replace(/\[HEIGHT\]/g, f.height)
+    .replace(/\[CHANNEL([+-]\d+)?\]/g, (_, op) => {
+      const base = parseInt(f.channel, 10);
+      if (isNaN(base)) return f.channel || "1";
+      return String(op ? base + parseInt(op, 10) : base);
+    })
+    .replace(/\[AUTH\]/g, (f.user || f.pass) ? btoa(f.user + ":" + f.pass) : "[AUTH]")
+    .replace(/\[TOKEN\]/g, f.token ? enc(f.token) : "[TOKEN]");
+
+  // Credentials live in the authority only when the pattern has no in-URL
+  // credential placeholder (covers RTSP basic-auth style streams).
+  const hasCredPlaceholder = /\[USERNAME\]|\[PASS?WORD\]|\[AUTH\]/.test(raw);
+  let auth = "";
+  if (!hasCredPlaceholder && (f.user || f.pass)) {
+    auth = enc(f.user) + (f.pass ? ":" + enc(f.pass) : "") + "@";
+  }
+
+  const host = f.host || "<HOST>";
+  let port = f.port || (stream.port > 0 ? stream.port : DEFAULT_PORTS[stream.protocol]);
+  const portPart = port ? ":" + port : "";
+  path = "/" + path.replace(/^\/+/, "");   // collapse any leading slashes to exactly one
+
+  return `${stream.protocol}://${auth}${host}${portPart}${path}`;
+}
+
+function render() {
+  const box = $("results");
+  const meta = $("meta");
+
+  // Per-type counts over the full result set (independent of active filters).
+  const counts = {};
+  for (const s of lastResults) {
+    const k = kindOf(s);
+    counts[k] = (counts[k] || 0) + 1;
+  }
+  document.querySelectorAll("#filters .filter").forEach(b => {
+    const n = counts[b.dataset.kind] || 0;
+    b.querySelector(".fc").textContent = n ? " " + n : "";
+    b.classList.toggle("zero", n === 0);
+  });
+
+  if (!lastResults.length) {
+    box.replaceChildren();
+    return;
+  }
+
+  const shown = lastResults.filter(s => active.has(kindOf(s)));
+  if (active.size === 0) {
+    meta.textContent = "Select at least one type above.";
+  } else {
+    const capped = lastResults.length >= 300 ? ", refine to narrow" : "";
+    meta.textContent = shown.length === lastResults.length
+      ? `${lastResults.length} match${lastResults.length === 1 ? "" : "es"}${capped}`
+      : `${shown.length} of ${lastResults.length} shown${capped}`;
+  }
+
+  const frag = document.createDocumentFragment();
+  for (const s of shown) {
+    const url = buildUrl(s);
+    const card = document.createElement("div");
+    card.className = "card";
+
+    const row1 = document.createElement("div");
+    row1.className = "row1";
+    const brand = document.createElement("span");
+    brand.className = "brand";
+    brand.textContent = s.brand;
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = s.protocol;
+    row1.append(brand, badge);
+
+    const urlWrap = document.createElement("div");
+    urlWrap.className = "url";
+    const code = document.createElement("code");
+    code.textContent = url;
+    const copy = document.createElement("button");
+    copy.className = "copy";
+    copy.textContent = "Copy";
+    copy.onclick = () => {
+      navigator.clipboard.writeText(url).then(() => {
+        copy.textContent = "Copied"; copy.classList.add("ok");
+        setTimeout(() => { copy.textContent = "Copy"; copy.classList.remove("ok"); }, 1200);
+      });
+    };
+    urlWrap.append(code, copy);
+
+    const pat = document.createElement("div");
+    pat.className = "pattern";
+    pat.textContent = "pattern: " + s.url;
+    card.append(row1, urlWrap, pat);
+
+    if (s.models) {
+      const m = document.createElement("div");
+      m.className = "models";
+      m.textContent = "models: " + s.models;
+      card.append(m);
+    }
+    frag.append(card);
+  }
+  box.replaceChildren(frag);
+}
+
+let timer = null;
+async function doSearch() {
+  const q = $("search").value.trim();
+  const meta = $("meta");
+  if (q.length < 2) {
+    lastResults = [];
+    render();
+    meta.textContent = "Type at least 2 characters to search.";
+    return;
+  }
+  meta.textContent = "Searching…";
+  try {
+    const res = await fetch("/api/search?q=" + encodeURIComponent(q));
+    const data = await res.json();
+    lastResults = data.results || [];
+    render();                              // render() sets the count message
+    if (!lastResults.length) meta.textContent = "No matches.";
+  } catch (e) {
+    meta.textContent = "Search failed: " + e.message;
+  }
+}
+
+$("search").addEventListener("input", () => {
+  clearTimeout(timer);
+  timer = setTimeout(doSearch, 180);
+});
+// Re-fill URLs live as camera details change; no refetch needed.
+fields.forEach(id => $(id).addEventListener("input", render));
+buildFilters();
+$("search").focus();
+</script>
+</body>
+</html>
